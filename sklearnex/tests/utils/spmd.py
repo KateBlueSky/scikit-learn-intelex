@@ -21,17 +21,17 @@ from sklearn.model_selection import train_test_split
 
 from onedal.tests.utils._dataframes_support import _as_numpy
 
-try:
-    import dpctl
-    from dpctl import SyclQueue
-    from mpi4py import MPI
+#try:
+import dpctl
+from dpctl import SyclQueue
+from mpi4py import MPI
 
-    mpi_libs_available = True
-    gpu_is_available = dpctl.has_gpu_devices()
-except (ImportError, ModuleNotFoundError):
-    mpi_libs_available = False
+#    mpi_libs_available = True
+#    gpu_is_available = dpctl.has_gpu_devices()
+#except (ImportError, ModuleNotFoundError):
+#    mpi_libs_available = False
 
-_mpi_libs_and_gpu_available = mpi_libs_available and gpu_is_available
+#_mpi_libs_and_gpu_available = mpi_libs_available and gpu_is_available
 
 
 def _get_local_tensor(full_data):
