@@ -292,9 +292,9 @@ class TSNE(BaseTSNE):
                 print("[t-SNE] Computing {} nearest neighbors...".format(n_neighbors))
 
             # Find the nearest neighbors for every point
-            knn = None
+            self.knn = None
             if sklearn_check_version("1.1"):
-                knn = NearestNeighbors(
+                self.knn = NearestNeighbors(
                     algorithm="auto",
                     n_jobs=self.n_jobs,
                     n_neighbors=n_neighbors,
@@ -302,14 +302,14 @@ class TSNE(BaseTSNE):
                     metric_params=self.metric_params,
                 )
             else:
-                knn = NearestNeighbors(
+                self.knn = NearestNeighbors(
                     algorithm="auto",
                     n_jobs=self.n_jobs,
                     n_neighbors=n_neighbors,
                     metric=self.metric,
                 )
             t0 = time()
-            knn.fit(X)
+            self.knn.fit(X)
             duration = time() - t0
             if self.verbose:
                 print(
@@ -326,7 +326,7 @@ class TSNE(BaseTSNE):
                 )
 
             # Free the memory used by the ball_tree
-            del knn
+            del self.knn
 
             if (
                 getattr(self, "square_distances", True) is True
