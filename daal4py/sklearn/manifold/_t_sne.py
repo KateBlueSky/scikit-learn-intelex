@@ -317,7 +317,7 @@ class TSNE(BaseTSNE):
                 )
 
             t0 = time()
-            distances_nn = knn.kneighbors_graph(mode="distance")
+            distances_nn = self.knn.kneighbors_graph(mode="distance")
             duration = time() - t0
             if self.verbose:
                 print(
