@@ -56,7 +56,7 @@ from sklearnex.tests.utils import (
 )
 
 # to reproduce errors even in CI
-d4p.daalinit()
+d4p.daalinit(nthreads=1)
 
 _dataset_dict = {
     "classification": [
