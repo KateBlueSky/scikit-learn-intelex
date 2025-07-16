@@ -15,35 +15,29 @@
 # ==============================================================================
 
 import logging
+import warnings
 
-from daal4py.sklearn._utils import daal_check_version
+import numpy as np
+from scipy.sparse import issparse
+from sklearn.cluster import KMeans as _sklearn_KMeans
+from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
+from sklearn.utils.validation import (
+    _check_sample_weight,
+    check_is_fitted,
+)
 
+from daal4py.sklearn._n_jobs_support import control_n_jobs
+from daal4py.sklearn._utils import sklearn_check_version, daal_check_version
+from onedal._device_offload import support_input_format
+from onedal.cluster import KMeans as onedal_KMeans
+
+from .._device_offload import dispatch, wrap_output_data
+from ..utils._array_api import get_namespace
+from ..utils.validation import validate_data, check_kmeans_patching_conditions
+from ..base import oneDALEstimator
+
+# --------- TOP-LEVEL IF ---------
 if daal_check_version((2023, "P", 200)):
-
-    import numbers
-    import warnings
-
-    import numpy as np
-    from scipy.sparse import issparse
-    from sklearn.cluster import KMeans as _sklearn_KMeans
-    from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
-    from sklearn.utils.validation import (
-        _check_sample_weight,
-        _num_samples,
-        check_is_fitted,
-    )
-
-    from daal4py.sklearn._n_jobs_support import control_n_jobs
-    from daal4py.sklearn._utils import sklearn_check_version
-    from onedal._device_offload import support_input_format
-    from onedal.cluster import KMeans as onedal_KMeans
-    from onedal.utils.validation import _is_csr
-
-    from .._device_offload import dispatch, wrap_output_data
-    from .._utils import PatchingConditionsChain
-    from ..base import oneDALEstimator
-    from ..utils._array_api import get_namespace
-    from ..utils.validation import validate_data
 
     @control_n_jobs(decorated_methods=["fit", "fit_transform", "predict", "score"])
     class KMeans(oneDALEstimator, _sklearn_KMeans):
@@ -81,76 +75,14 @@ if daal_check_version((2023, "P", 200)):
                 algorithm=algorithm,
             )
 
-        def _initialize_onedal_estimator(self):
-            onedal_params = {
-                "n_clusters": self.n_clusters,
-                "init": self.init,
-                "max_iter": self.max_iter,
-                "tol": self.tol,
-                "n_init": self.n_init,
-                "verbose": self.verbose,
-                "random_state": self.random_state,
-            }
-
-            self._onedal_estimator = onedal_KMeans(**onedal_params)
-
-        def _onedal_fit_supported(self, method_name, X, y=None, sample_weight=None):
-            assert method_name == "fit"
-
-            class_name = self.__class__.__name__
-            patching_status = PatchingConditionsChain(f"sklearn.cluster.{class_name}.fit")
-
-            sample_count = _num_samples(X)
-            supported_algs = ["auto", "full", "lloyd", "elkan"]
-
-            if self.algorithm == "elkan":
-                logging.getLogger("sklearnex").info(
-                    "oneDAL does not support 'elkan', using 'lloyd' algorithm instead."
-                )
-            correct_count = self.n_clusters < sample_count
-
-            is_data_supported = (
-                _is_csr(X) and daal_check_version((2024, "P", 700))
-            ) or not issparse(X)
-
-            _acceptable_sample_weights = self._validate_sample_weight(sample_weight, X)
-
-            patching_status.and_conditions(
-                [
-                    (
-                        self.algorithm in supported_algs,
-                        "Only 'lloyd' algorithm is supported, 'elkan' is computed using lloyd",
-                    ),
-                    (self.n_clusters != 1, "n_clusters=1 is not supported"),
-                    (correct_count, "n_clusters is smaller than number of samples"),
-                    (
-                        _acceptable_sample_weights,
-                        "oneDAL doesn't support sample_weight. Accepted options are None, constant, or equal weights.",
-                    ),
-                    (
-                        is_data_supported,
-                        "Supported data formats: Dense, CSR (oneDAL version >= 2024.7.0).",
-                    ),
-                ]
-            )
-
-            return patching_status
-
         def fit(self, X, y=None, sample_weight=None):
             if sklearn_check_version("1.2"):
                 self._validate_params()
 
-            dispatch(
-                self,
-                "fit",
-                {
-                    "onedal": self.__class__._onedal_fit,
-                    "sklearn": _sklearn_KMeans.fit,
-                },
-                X,
-                y,
-                sample_weight,
-            )
+            if check_kmeans_patching_conditions(self, X, sample_weight):
+                self._onedal_fit(X, y, sample_weight)
+            else:
+                super().fit(X, y=y, sample_weight=sample_weight)
 
             return self
 
@@ -178,12 +110,22 @@ if daal_check_version((2023, "P", 200)):
 
             self._save_attributes()
 
+        def _initialize_onedal_estimator(self):
+            onedal_params = {
+                "n_clusters": self.n_clusters,
+                "init": self.init,
+                "max_iter": self.max_iter,
+                "tol": self.tol,
+                "n_init": self.n_init,
+                "verbose": self.verbose,
+                "random_state": self.random_state,
+            }
+            self._onedal_estimator = onedal_KMeans(**onedal_params)
+
         def _validate_sample_weight(self, sample_weight, X):
             if sample_weight is None:
                 return True
-            elif isinstance(sample_weight, numbers.Number) or isinstance(
-                sample_weight, str
-            ):
+            elif isinstance(sample_weight, (int, float, str)):
                 return True
             else:
                 sample_weight = _check_sample_weight(
@@ -191,10 +133,7 @@ if daal_check_version((2023, "P", 200)):
                     X,
                     dtype=X.dtype if hasattr(X, "dtype") else None,
                 )
-                if np.all(sample_weight == sample_weight[0]):
-                    return True
-                else:
-                    return False
+                return np.all(sample_weight == sample_weight[0])
 
         def _onedal_predict_supported(self, method_name, *data):
             class_name = self.__class__.__name__
@@ -207,15 +146,14 @@ if daal_check_version((2023, "P", 200)):
             sample_weight = data[-1] if len(data) > 1 else None
 
             is_data_supported = (
-                _is_csr(X) and daal_check_version((2024, "P", 700))
+                getattr(X, "getformat", lambda: None)() == "csr"
+                and daal_check_version((2024, "P", 700))
             ) or not issparse(X)
 
-            # algorithm "auto" has been deprecated since 1.1,
-            # algorithm "full" has been replaced by "lloyd"
             supported_algs = ["auto", "full", "lloyd", "elkan"]
             if self.algorithm == "elkan":
                 logging.getLogger("sklearnex").info(
-                    "oneDAL does not support 'elkan', using 'lloyd' algorithm instead."
+                    "oneDAL does not support 'elkan'; using 'lloyd' instead."
                 )
 
             _acceptable_sample_weights = True
@@ -228,16 +166,16 @@ if daal_check_version((2023, "P", 200)):
                 [
                     (
                         self.algorithm in supported_algs,
-                        "Only 'lloyd' algorithm is supported, 'elkan' is computed using lloyd.",
+                        "Only 'lloyd' algorithm is supported; 'elkan' computed via lloyd.",
                     ),
-                    (self.n_clusters != 1, "n_clusters=1 is not supported"),
+                    (self.n_clusters != 1, "n_clusters=1 not supported"),
                     (
                         is_data_supported,
-                        "Supported data formats: Dense, CSR (oneDAL version >= 2024.7.0).",
+                        "Supported formats: Dense or CSR (oneDAL version >= 2024.7.0).",
                     ),
                     (
                         _acceptable_sample_weights,
-                        "oneDAL doesn't support sample_weight. Acceptable options are None, constant, or equal weights.",
+                        "oneDAL supports only None, constant, or equal sample_weight.",
                     ),
                 ]
             )
@@ -310,7 +248,7 @@ if daal_check_version((2023, "P", 200)):
 
         def _onedal_supported(self, method_name, *data):
             if method_name == "fit":
-                return self._onedal_fit_supported(method_name, *data)
+                return check_kmeans_patching_conditions(self, *data)
             if method_name in ["predict", "score"]:
                 return self._onedal_predict_supported(method_name, *data)
             raise RuntimeError(
@@ -390,9 +328,12 @@ if daal_check_version((2023, "P", 200)):
         predict.__doc__ = _sklearn_KMeans.predict.__doc__
         score.__doc__ = _sklearn_KMeans.score.__doc__
 
+# --------- TOP-LEVEL ELSE ---------
 else:
     from daal4py.sklearn.cluster import KMeans
 
     logging.warning(
         "Sklearnex KMeans requires oneDAL version >= 2023.2, falling back to daal4py."
     )
+
+
