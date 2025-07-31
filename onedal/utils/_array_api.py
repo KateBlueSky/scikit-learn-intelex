@@ -81,7 +81,26 @@ def _cls_to_sycl_namespace(cls):
         raise ValueError(f"SYCL type not recognized: {cls}")
 
 
-def _is_valid_sycl_array(x):
+def _get_sycl_namespace(*arrays):
+    """Get namespace of sycl arrays."""
+
+    # sycl support designed to work regardless of array_api_dispatch sklearn global value
+    sua_iface = {type(x): x for x in arrays if hasattr(x, "__sycl_usm_array_interface__")}
+
+    if len(sua_iface) > 1:
+        raise ValueError(f"Multiple SYCL types for array inputs: {sua_iface}")
+
+    if sua_iface:
+        (X,) = sua_iface.values()
+        return (
+            sua_iface,
+            _cls_to_sycl_namespace(type(X)),
+            hasattr(X, "__array_namespace__"),
+        )
+
+    return sua_iface, np, False
+
+""" def _is_valid_sycl_array(x):
     try:
         if getattr(x, "__sycl_usm_array_interface__", None) is None:
             return False
@@ -91,7 +110,7 @@ def _is_valid_sycl_array(x):
     if isinstance(x, (sp.spmatrix, onedal_table_type)):
         return False
 
-    return True
+    return True 
 
 
 def _get_sycl_namespace(*arrays):
@@ -108,4 +127,4 @@ def _get_sycl_namespace(*arrays):
             hasattr(X, "__array_namespace__"),
         )
 
-    return sua_iface, np, False
+    return sua_iface, np, False """
